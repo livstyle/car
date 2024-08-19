@@ -1,12 +1,47 @@
 use makepad_micro_serde::SerJson;
 use makepad_widgets::*;
-use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter};
 use btleplug::platform::Manager;
+use uuid::Uuid;
+use anyhow::anyhow;
+use lazy_static::lazy_static;
 
-use tokio::runtime::Runtime;
+use btleplug::api::{Central, CharPropFlags, Manager as _, Peripheral, ScanFilter, WriteType};
+// use futures::stream::StreamExt;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time;
+use tokio::runtime::Runtime;
+
+use std::{ops::Deref, sync::{Arc, Mutex}};
+use once_cell::sync::Lazy;
+
+use crate::builder::{Builder, thread::SpawnAttach as _, Runtime as _};
+/// Only devices whose name contains this string will be tried.
+const PERIPHERAL_NAME_MATCH_FILTER: &str = "智能小车蓝牙";
+/// UUID of the characteristic for which we should subscribe to notifications.
+const NOTIFY_CHARACTERISTIC_UUID: Uuid = Uuid::from_u128(0x6e400002_b534_f393_67a9_e50e24dccA9e);
+
+// pub struct Config {
+//     // peripheral: Option<Box<dyn btleplug::api::Peripheral>>,
+//     characteristic: Option<btleplug::api::Characteristic>
+// }
+
+
+// pub static GLOBAL_CONFIG: Lazy<Arc<Mutex<Config>>> = Lazy::new(|| {
+//     Arc::new(Mutex::new(Config { characteristic: None }))
+// });
+
+
+// lazy_static! {
+//     static ref GLOBAL_P: Arc<Option<Box<dyn btleplug::api::Peripheral>>> = {
+//         Arc::new(None)
+//     };
+// }
+
+lazy_static! {
+    pub static ref MYRUNTIME: Runtime = Builder::new();
+}
+
        
 live_design!{
     import makepad_widgets::base::*;
@@ -78,20 +113,20 @@ live_design!{
                         },
                         text: "Counter: 0"
                     }
-                    button_ble = <Button> {
-                        margin: {
-                            top: 10,
-                            left: 100,
-                        }
-                        text: "获取蓝牙"
-                        draw_text:{color:#f00}
-                    }
-                    label_ble = <Label> {
-                        draw_text: {
-                            color: #f
-                        },
-                        text: "蓝牙: 0"
-                    }
+                    // button_ble = <Button> {
+                    //     margin: {
+                    //         top: 10,
+                    //         left: 100,
+                    //     }
+                    //     text: "获取蓝牙"
+                    //     draw_text:{color:#f00}
+                    // }
+                    // label_ble = <Label> {
+                    //     draw_text: {
+                    //         color: #f
+                    //     },
+                    //     text: "蓝牙: 0"
+                    // }
                 }
             }
         }
@@ -104,7 +139,7 @@ app_main!(App);
 pub struct App {
     #[live] ui: WidgetRef,
     #[rust] counter: usize,
- }
+}
  
 impl LiveRegister for App {
     fn live_register(cx: &mut Cx) {
@@ -127,90 +162,81 @@ impl MatchEvent for App{
     fn handle_actions(&mut self, cx: &mut Cx, actions:&Actions){
         
         if self.ui.button(id!(button1)).clicked(&actions) {
-            log!("BUTTON jk {}", self.counter); 
-            self.counter += 1;
-            let label = self.ui.label(id!(label1));
-            label.set_text_and_redraw(cx,&format!("Counter: {}", self.counter));
+            log!("BUTTON 前进: {}", self.counter); 
+            // self.counter += 1;
+            // let label = self.ui.label(id!(label1));
+            // label.set_text_and_redraw(cx,&format!("Counter: {}", self.counter));
             //log!("TOTAL : {}",TrackingHeap.total());
-            
-        }
-        if self.ui.button(id!(button_ble)).clicked(&actions) {
-            log!("BUTTON ble {}", self.counter); 
-            let label = self.ui.label(id!(label_ble));
-            // let result = block_on(future);
-            let rt = Runtime::new().unwrap();
-            let fut = async move {
-                let manager = Manager::new().await.unwrap();
-                let adapter_list = manager.adapters().await.unwrap();
-                if adapter_list.is_empty() {
-                    println!("No Bluetooth adapters found");
-                    label.set_text_and_redraw(cx, "蓝牙连接失败");
-                } else {
-                    println!("蓝牙连接成功    : ==> {:?}", adapter_list);
-                    label.set_text_and_redraw(cx, "蓝牙连接成功");
-                    time::sleep(Duration::from_secs(2)).await;
-                    for adapter in adapter_list.iter() {
-                        println!("Starting scan on {}...", adapter.adapter_info().await.unwrap());
-                        adapter
-                            .start_scan(ScanFilter::default())
-                            .await
-                            .expect("Can't scan BLE adapter for connected devices...");
-                        time::sleep(Duration::from_secs(2)).await;
-                        let peripherals = adapter.peripherals().await.unwrap();
-                        if peripherals.is_empty() {
-                            eprintln!("->>> BLE peripheral devices were not found, sorry. Exiting...");
-                        } else {
-                            // All peripheral devices in range
-                            for peripheral in peripherals.iter() {
-                                let properties = peripheral.properties().await.unwrap();
-                                let is_connected = peripheral.is_connected().await.unwrap();
-                                let local_name = properties
-                                    .unwrap()
-                                    .local_name
-                                    .unwrap_or(String::from("(peripheral name unknown)"));
-                                println!(
-                                    "Peripheral {:?} is connected: {:?}",
-                                    local_name, is_connected
-                                );
-                                if !is_connected {
-                                    println!("Connecting to peripheral {:?}...", &local_name);
-                                    if let Err(err) = peripheral.connect().await {
-                                        eprintln!("Error connecting to peripheral, skipping: {}", err);
-                                        continue;
-                                    }
-                                }
-                                let is_connected = peripheral.is_connected().await.unwrap();
-                                println!(
-                                    "Now connected ({:?}) to peripheral {:?}...",
-                                    is_connected, &local_name
-                                );
-                                peripheral.discover_services().await.unwrap();
-                                println!("Discover peripheral {:?} services...", &local_name);
-                                for service in peripheral.services() {
-                                    println!(
-                                        "Service UUID {}, primary: {}",
-                                        service.uuid, service.primary
-                                    );
-                                    for characteristic in service.characteristics {
-                                        println!("  {:?}", characteristic);
-                                    }
-                                }
-                                if is_connected {
-                                    println!("Disconnecting from peripheral {:?}...", &local_name);
-                                    peripheral
-                                        .disconnect()
-                                        .await
-                                        .expect("Error disconnecting from BLE peripheral");
-                                }
-                            }
-                        }
-                    }
 
-                }
-                // label.set_text_and_redraw(cx, &ds.join(";"));
-            };
-            rt.block_on(fut);
+            let th = std::thread::Builder::new()
+                .name(String::from("发送数据线程"))
+                .spawn(move || {
+                    // debug!("callng discover under MYRUNTIME in thread id: {:?}", thread::current().id());
+                    match MYRUNTIME.block_on(async { ble(1).await }) {
+                        Ok(_) => { println!("数据发送成功");},
+                        Err(e) => {println!("数据发送失败: {:?}", e)}
+                    }
+                    // debug!("exiting 发送数据线程: {:?}", thread::current().id());
+            }).unwrap();
+            th.join().unwrap();
         }
+
+        if self.ui.button(id!(button3)).clicked(&actions) {
+            log!("BUTTON 左转"); 
+            let th = std::thread::Builder::new()
+                .name(String::from("发送数据线程"))
+                .spawn(move || {
+                    // debug!("callng discover under MYRUNTIME in thread id: {:?}", thread::current().id());
+                    match MYRUNTIME.block_on(async { ble(2).await }) {
+                        Ok(_) => { println!("数据发送成功");},
+                        Err(e) => {println!("数据发送失败: {:?}", e)}
+                    }
+                    // debug!("exiting 发送数据线程: {:?}", thread::current().id());
+            }).unwrap();
+            th.join().unwrap();
+        }
+
+        if self.ui.button(id!(button4)).clicked(&actions) {
+            log!("BUTTON 右转"); 
+            let th = std::thread::Builder::new()
+                .name(String::from("发送数据线程"))
+                .spawn(move || {
+                    // debug!("callng discover under MYRUNTIME in thread id: {:?}", thread::current().id());
+                    match MYRUNTIME.block_on(async { ble(3).await }) {
+                        Ok(_) => { println!("数据发送成功");},
+                        Err(e) => {println!("数据发送失败: {:?}", e)}
+                    }
+                    // debug!("exiting 发送数据线程: {:?}", thread::current().id());
+            }).unwrap();
+            th.join().unwrap();
+        }
+
+        if self.ui.button(id!(button2)).clicked(&actions) {
+            log!("BUTTON 后退"); 
+            let th = std::thread::Builder::new()
+                .name(String::from("发送数据线程"))
+                .spawn(move || {
+                    // debug!("callng discover under MYRUNTIME in thread id: {:?}", thread::current().id());
+                    match MYRUNTIME.block_on(async { ble(4).await }) {
+                        Ok(_) => { println!("数据发送成功");},
+                        Err(e) => {println!("数据发送失败: {:?}", e)}
+                    }
+                    // debug!("exiting 发送数据线程: {:?}", thread::current().id());
+            }).unwrap();
+            th.join().unwrap();
+        }
+
+        // if self.ui.button(id!(button_ble)).clicked(&actions) {
+        //     log!("BUTTON ble {}", self.counter); 
+        //     let label = self.ui.label(id!(label_ble));
+        //     // let result = block_on(future);
+        //     let rt = Runtime::new().unwrap();
+        //     let fut = async move {
+        //         let res = init_ble().await;
+        //         label.set_text_and_redraw(cx, "蓝牙连接成功");
+        //     };
+        //     rt.block_on(fut);
+        // }
     }
 }
 
@@ -221,53 +247,87 @@ impl AppMain for App {
     }
 } 
 
-/*
 
-// This is our custom allocator!
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicU64, Ordering},
-};
+// #[tokio::main]
+async fn ble(num: u8) -> Result<(), anyhow::Error> {
+    // pretty_env_logger::init();
 
-pub struct TrackingHeapWrap{
-    count: AtomicU64,
-    total: AtomicU64,
-}
+    let manager = Manager::new().await?;
+    let adapter_list = manager.adapters().await?;
+    if adapter_list.is_empty() {
+        println!("No Bluetooth adapters found");
+        return Err(anyhow!("No Bluetooth adapters found"));
+    }
 
-impl TrackingHeapWrap {
-    // A const initializer that starts the count at 0.
-    pub const fn new() -> Self {
-        Self{
-            count: AtomicU64::new(0),
-            total: AtomicU64::new(0)
+    for adapter in adapter_list.iter() {
+        println!("Starting scan...");
+        adapter
+            .start_scan(ScanFilter::default())
+            .await?;
+        time::sleep(Duration::from_millis(500)).await;
+        let peripherals = adapter.peripherals().await?;
+
+        if peripherals.is_empty() {
+            println!("->>> BLE peripheral devices were not found, sorry. Exiting...");
+            return Err(anyhow!("Scan failed"));
+        } else {
+            // All peripheral devices in range.
+            let mut is_send = false;
+            for peripheral in peripherals.iter() {
+                let properties = peripheral.properties().await?;
+                let is_connected = peripheral.is_connected().await?;
+                let local_name = properties
+                    .unwrap()
+                    .local_name
+                    .unwrap_or(String::from("(peripheral name unknown)"));
+                println!(
+                    "Peripheral {:?} is connected: {:?}",
+                    &local_name, is_connected
+                );
+                // Check if it's the peripheral we want.
+                if local_name.contains(PERIPHERAL_NAME_MATCH_FILTER) {
+                    println!("Found matching peripheral {:?}...", &local_name);
+                    if !is_connected {
+                        // Connect if we aren't already connected.
+                        if let Err(err) = peripheral.connect().await {
+                            eprintln!("Error connecting to peripheral, skipping: {}", err);
+                            continue;
+                        }
+                    }
+                    let is_connected = peripheral.is_connected().await?;
+                    println!(
+                        "Now connected ({:?}) to peripheral {:?}.",
+                        is_connected, &local_name
+                    );
+                    if is_connected {
+                        println!("Discover peripheral {:?} services...", local_name);
+                        peripheral.discover_services().await?;
+                        for characteristic in peripheral.characteristics() {
+                            println!("Checking characteristic {:?}", characteristic);
+                            let r = peripheral.write(&characteristic, &vec![num], WriteType::WithoutResponse).await;
+                            println!("Write result: {:?}", r);
+                            is_send = true;
+                            // let config = GLOBAL_CONFIG.lock().unwrap();
+                            // // config.peripheral = Some(Box::new(peripheral.clone()));
+                            // let global_p = GLOBAL_P.unwrap();
+                            // *global_p = Box::new(peripheral.clone());
+                            // config.characteristic = Some(characteristic.clone());
+                            break;
+                        }
+                        // println!("Disconnecting from peripheral {:?}...", local_name);
+                        // peripheral.disconnect().await?;
+                    }
+                } else {
+                    println!("Skipping unknown peripheral {:?}", peripheral.address());
+                    continue;
+                }
+            }
+            if is_send {
+                return Ok(());
+            } else {
+                return Err(anyhow!("Scan completed not found in peripherals"));
+            }
         }
     }
-    
-    // Returns the current count.
-    pub fn count(&self) -> u64 {
-        self.count.load(Ordering::Relaxed)
-    }
-    
-    pub fn total(&self) -> u64 {
-        self.total.load(Ordering::Relaxed)
-    }
+    Ok(())
 }
-
-unsafe impl GlobalAlloc for TrackingHeapWrap {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // Pass everything to System.
-        self.count.fetch_add(1, Ordering::Relaxed); 
-        self.total.fetch_add(layout.size() as u64, Ordering::Relaxed);
-        System.alloc(layout)
-    }
-        
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.count.fetch_sub(1, Ordering::Relaxed); 
-        self.total.fetch_sub(layout.size() as u64, Ordering::Relaxed);
-        System.dealloc(ptr, layout)
-    }
-}
-
-// Register our custom allocator.
-#[global_allocator]
-static TrackingHeap: TrackingHeapWrap = TrackingHeapWrap::new();*/
