@@ -42,7 +42,10 @@ lazy_static! {
     pub static ref MYRUNTIME: Runtime = Builder::new();
 }
 
-       
+lazy_static! {
+    pub static ref BLE_LIST: Arc<Mutex<Option<Vec<btleplug::platform::Adapter>>>> = Arc::new(Mutex::new(None));
+}
+
 live_design!{
     import makepad_widgets::base::*;
     import makepad_widgets::theme_desktop_dark::*; 
@@ -248,86 +251,111 @@ impl AppMain for App {
 } 
 
 
+fn init_ble() -> Result<String, anyhow::Error>{
+    let th = std::thread::spawn(move || {
+        match MYRUNTIME.block_on(async { 
+            let manager = Manager::new().await.unwrap();
+            let adapter_list: Vec<btleplug::platform::Adapter> = manager.adapters().await.unwrap();
+            if adapter_list.is_empty() {
+                println!("No Bluetooth adapters found");
+                return Err(anyhow!("No Bluetooth adapters found"));
+            } else {
+                // 保存到全局对象中
+                let ble_list = BLE_LIST.clone().lock().unwrap();
+                *ble_list = Some(adapter_list);
+                Ok("Bluetooth adapters found")
+            }
+        }) {
+            Ok(_) => { println!("蓝牙初始化成功");},
+            Err(e) => {println!("蓝牙初始化失败: {:?}", e)}
+        }
+    });
+    th.join().unwrap()
+}
+
 // #[tokio::main]
 async fn ble(num: u8) -> Result<(), anyhow::Error> {
     // pretty_env_logger::init();
 
-    let manager = Manager::new().await?;
-    let adapter_list = manager.adapters().await?;
-    if adapter_list.is_empty() {
-        println!("No Bluetooth adapters found");
-        return Err(anyhow!("No Bluetooth adapters found"));
-    }
-
-    for adapter in adapter_list.iter() {
-        println!("Starting scan...");
-        adapter
-            .start_scan(ScanFilter::default())
-            .await?;
-        time::sleep(Duration::from_millis(500)).await;
-        let peripherals = adapter.peripherals().await?;
-
-        if peripherals.is_empty() {
-            println!("->>> BLE peripheral devices were not found, sorry. Exiting...");
-            return Err(anyhow!("Scan failed"));
-        } else {
-            // All peripheral devices in range.
-            let mut is_send = false;
-            for peripheral in peripherals.iter() {
-                let properties = peripheral.properties().await?;
-                let is_connected = peripheral.is_connected().await?;
-                let local_name = properties
-                    .unwrap()
-                    .local_name
-                    .unwrap_or(String::from("(peripheral name unknown)"));
-                println!(
-                    "Peripheral {:?} is connected: {:?}",
-                    &local_name, is_connected
-                );
-                // Check if it's the peripheral we want.
-                if local_name.contains(PERIPHERAL_NAME_MATCH_FILTER) {
-                    println!("Found matching peripheral {:?}...", &local_name);
-                    if !is_connected {
-                        // Connect if we aren't already connected.
-                        if let Err(err) = peripheral.connect().await {
-                            eprintln!("Error connecting to peripheral, skipping: {}", err);
-                            continue;
-                        }
-                    }
+    let adapter_list_option = *BLE_LIST.clone().lock().unwrap();
+    if let Some(adapter_list) = adapter_list_option {
+        if adapter_list.is_none() {
+            println!("No Bluetooth adapters found");
+            return Err(anyhow!("No Bluetooth adapters found"));
+        }
+        for adapter in adapter_list.iter() {
+            println!("Starting scan...");
+            adapter
+                .start_scan(ScanFilter::default())
+                .await?;
+            time::sleep(Duration::from_millis(500)).await;
+            let peripherals = adapter.peripherals().await?;
+    
+            if peripherals.is_empty() {
+                println!("->>> BLE peripheral devices were not found, sorry. Exiting...");
+                return Err(anyhow!("Scan failed"));
+            } else {
+                // All peripheral devices in range.
+                let mut is_send = false;
+                for peripheral in peripherals.iter() {
+                    let properties = peripheral.properties().await?;
                     let is_connected = peripheral.is_connected().await?;
+                    let local_name = properties
+                        .unwrap()
+                        .local_name
+                        .unwrap_or(String::from("(peripheral name unknown)"));
                     println!(
-                        "Now connected ({:?}) to peripheral {:?}.",
-                        is_connected, &local_name
+                        "Peripheral {:?} is connected: {:?}",
+                        &local_name, is_connected
                     );
-                    if is_connected {
-                        println!("Discover peripheral {:?} services...", local_name);
-                        peripheral.discover_services().await?;
-                        for characteristic in peripheral.characteristics() {
-                            println!("Checking characteristic {:?}", characteristic);
-                            let r = peripheral.write(&characteristic, &vec![num], WriteType::WithoutResponse).await;
-                            println!("Write result: {:?}", r);
-                            is_send = true;
-                            // let config = GLOBAL_CONFIG.lock().unwrap();
-                            // // config.peripheral = Some(Box::new(peripheral.clone()));
-                            // let global_p = GLOBAL_P.unwrap();
-                            // *global_p = Box::new(peripheral.clone());
-                            // config.characteristic = Some(characteristic.clone());
-                            break;
+                    // Check if it's the peripheral we want.
+                    if local_name.contains(PERIPHERAL_NAME_MATCH_FILTER) {
+                        println!("Found matching peripheral {:?}...", &local_name);
+                        if !is_connected {
+                            // Connect if we aren't already connected.
+                            if let Err(err) = peripheral.connect().await {
+                                eprintln!("Error connecting to peripheral, skipping: {}", err);
+                                continue;
+                            }
                         }
-                        // println!("Disconnecting from peripheral {:?}...", local_name);
-                        // peripheral.disconnect().await?;
+                        let is_connected = peripheral.is_connected().await?;
+                        println!(
+                            "Now connected ({:?}) to peripheral {:?}.",
+                            is_connected, &local_name
+                        );
+                        if is_connected {
+                            println!("Discover peripheral {:?} services...", local_name);
+                            peripheral.discover_services().await?;
+                            for characteristic in peripheral.characteristics() {
+                                println!("Checking characteristic {:?}", characteristic);
+                                let r = peripheral.write(&characteristic, &vec![num], WriteType::WithoutResponse).await;
+                                println!("Write result: {:?}", r);
+                                is_send = true;
+                                // let config = GLOBAL_CONFIG.lock().unwrap();
+                                // // config.peripheral = Some(Box::new(peripheral.clone()));
+                                // let global_p = GLOBAL_P.unwrap();
+                                // *global_p = Box::new(peripheral.clone());
+                                // config.characteristic = Some(characteristic.clone());
+                                break;
+                            }
+                            // println!("Disconnecting from peripheral {:?}...", local_name);
+                            // peripheral.disconnect().await?;
+                        }
+                    } else {
+                        println!("Skipping unknown peripheral {:?}", peripheral.address());
+                        continue;
                     }
+                }
+                if is_send {
+                    return Ok(());
                 } else {
-                    println!("Skipping unknown peripheral {:?}", peripheral.address());
-                    continue;
+                    return Err(anyhow!("Scan completed not found in peripherals"));
                 }
             }
-            if is_send {
-                return Ok(());
-            } else {
-                return Err(anyhow!("Scan completed not found in peripherals"));
-            }
         }
+        Ok(())
+    } else {
+        println!("No Bluetooth adapters found");
+        Err(anyhow!("No Bluetooth adapters found"))
     }
-    Ok(())
 }
