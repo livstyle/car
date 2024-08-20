@@ -6,7 +6,6 @@ use anyhow::anyhow;
 use lazy_static::lazy_static;
 
 use btleplug::api::{Central, CharPropFlags, Manager as _, Peripheral, ScanFilter, WriteType};
-// use futures::stream::StreamExt;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time;
@@ -40,6 +39,10 @@ const NOTIFY_CHARACTERISTIC_UUID: Uuid = Uuid::from_u128(0x6e400002_b534_f393_67
 
 lazy_static! {
     pub static ref MYRUNTIME: Runtime = Builder::new();
+}
+
+lazy_static! {
+    pub static ref BLE_ADAPTER_LIST: Arc<Mutex<Option<Vec<btleplug::platform::Adapter>>>>= Arc::new(None); 
 }
 
        
@@ -163,20 +166,15 @@ impl MatchEvent for App{
         
         if self.ui.button(id!(button1)).clicked(&actions) {
             log!("BUTTON 前进: {}", self.counter); 
-            // self.counter += 1;
-            // let label = self.ui.label(id!(label1));
-            // label.set_text_and_redraw(cx,&format!("Counter: {}", self.counter));
             //log!("TOTAL : {}",TrackingHeap.total());
 
             let th = std::thread::Builder::new()
                 .name(String::from("发送数据线程"))
                 .spawn(move || {
-                    // debug!("callng discover under MYRUNTIME in thread id: {:?}", thread::current().id());
                     match MYRUNTIME.block_on(async { ble(1).await }) {
                         Ok(_) => { println!("数据发送成功");},
                         Err(e) => {println!("数据发送失败: {:?}", e)}
                     }
-                    // debug!("exiting 发送数据线程: {:?}", thread::current().id());
             }).unwrap();
             th.join().unwrap();
         }
@@ -186,12 +184,10 @@ impl MatchEvent for App{
             let th = std::thread::Builder::new()
                 .name(String::from("发送数据线程"))
                 .spawn(move || {
-                    // debug!("callng discover under MYRUNTIME in thread id: {:?}", thread::current().id());
                     match MYRUNTIME.block_on(async { ble(2).await }) {
                         Ok(_) => { println!("数据发送成功");},
                         Err(e) => {println!("数据发送失败: {:?}", e)}
                     }
-                    // debug!("exiting 发送数据线程: {:?}", thread::current().id());
             }).unwrap();
             th.join().unwrap();
         }
@@ -248,12 +244,11 @@ impl AppMain for App {
 } 
 
 
-// #[tokio::main]
 async fn ble(num: u8) -> Result<(), anyhow::Error> {
     // pretty_env_logger::init();
 
     let manager = Manager::new().await?;
-    let adapter_list = manager.adapters().await?;
+    let adapter_list: Vec<btleplug::platform::Adapter> = manager.adapters().await?;
     if adapter_list.is_empty() {
         println!("No Bluetooth adapters found");
         return Err(anyhow!("No Bluetooth adapters found"));
